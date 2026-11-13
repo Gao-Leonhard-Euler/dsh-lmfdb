@@ -68,6 +68,53 @@ def _js(obj) -> str:
     return json.dumps(obj, ensure_ascii=False, default=str, separators=(",", ":"))
 
 
+# ---------------------------------------------------------------------------
+# Primary / fallback backends
+#
+#   LMFDB_PRIMARY=mcp       (default) call https://mcp.lmfdb.org/mcp first and
+#                           fall back to the PostgreSQL mirror on timeout/failure
+#   LMFDB_PRIMARY=postgres  always use the mirror (no remote attempt)
+#
+# The remote endpoint exposes the same tool bodies; only lmfdb_find and
+# lmfdb_export_query differ, and they go through `run_sql` on that endpoint.
+# ---------------------------------------------------------------------------
+
+_PRIMARY = (os.environ.get("LMFDB_PRIMARY") or "mcp").strip().lower()
+_mcp_module = None
+
+
+def mcp():
+    """Import the MCP client module lazily (it pulls httpx/anyio)."""
+    global _mcp_module
+    if _mcp_module is None:
+        import mcp_backend as module  # noqa: PLC0415  (deliberate lazy import)
+
+        _mcp_module = module
+    return _mcp_module
+
+
+def primary_is_mcp() -> bool:
+    return _PRIMARY != "postgres"
+
+
+def warn_fallback(exc: object) -> None:
+    sys.stderr.write(f"[lmfdb] primary MCP unavailable ({exc}); using the PostgreSQL mirror\n")
+    sys.stderr.flush()
+
+
+def fetch_rows(sql: str, limit: int) -> dict:
+    """Run one read-only SELECT through the primary backend, falling back."""
+    if primary_is_mcp():
+        try:
+            payload = json.loads(mcp().call_tool("run_sql", {"sql": sql, "limit": limit}))
+            if "error" in payload:
+                raise RuntimeError(str(payload["error"]))
+            return payload
+        except Exception as exc:  # noqa: BLE001  (any failure means "fall back")
+            warn_fallback(exc)
+    return srv().run_query(sql, limit=limit)
+
+
 def _ident(name: str) -> bool:
     """True for a safe unquoted SQL identifier (letters, digits, underscore)."""
     return bool(name) and isinstance(name, str) and name.replace("_", "").isalnum()
@@ -207,7 +254,7 @@ def export_query(args) -> str:
             sql += f" WHERE {clause}"
         sql += f" LIMIT {max_rows}"
 
-    result = srv().run_query(sql, limit=max_rows)
+    result = fetch_rows(sql, max_rows)
     if "error" in result:
         return _js(result)
 
@@ -284,7 +331,7 @@ def find_rows(args) -> str:
     if clause:
         sql += f" WHERE {clause}"
     sql += f" LIMIT {limit}"
-    return _js(srv().run_query(sql, limit=limit))
+    return _js(fetch_rows(sql, limit))
 
 
 # ---------------------------------------------------------------------------
@@ -514,12 +561,59 @@ MANIFEST = [
 _BY_NAME = {entry["name"]: entry for entry in MANIFEST}
 
 
+# Tools the hosted MCP server implements 1:1. lmfdb_find and lmfdb_export_query
+# are absent on purpose: they build SQL locally and go through fetch_rows().
+REMOTE = {
+    "lmfdb_overview": lambda a: mcp().call_tool("overview", {}),
+    "lmfdb_list_tables": lambda a: mcp().call_tool(
+        "list_tables",
+        {"prefix": str(a.get("prefix") or ""), "status": str(a.get("status") or "production")},
+    ),
+    "lmfdb_search_knowls": lambda a: mcp().call_tool(
+        "search_knowls",
+        {"query": str(a.get("query") or ""), "limit": int(a.get("limit") or 20)},
+    ),
+    "lmfdb_describe_table": lambda a: mcp().call_tool(
+        "describe_table", {"table_name": str(a.get("table_name") or "").strip()}
+    ),
+    "lmfdb_sample_rows": lambda a: mcp().call_tool(
+        "sample_rows",
+        {"table_name": str(a.get("table_name") or "").strip(), "n": int(a.get("n") or 5)},
+    ),
+    "lmfdb_count_rows": lambda a: mcp().call_tool(
+        "count_rows",
+        {"table_name": str(a.get("table_name") or "").strip(), "where": build_where(a.get("where"))},
+    ),
+    "lmfdb_table_stats": lambda a: mcp().call_tool(
+        "table_stats",
+        {
+            "table_name": str(a.get("table_name") or "").strip(),
+            "column": str(a.get("column") or "").strip(),
+            "where": build_where(a.get("where")),
+        },
+    ),
+}
+
+
+def invoke(entry, args):
+    """Primary MCP when configured and reachable, otherwise the local body."""
+    local = entry["run"]
+    remote = REMOTE.get(entry["name"])
+    if remote is None or not primary_is_mcp():
+        return local(args)
+    try:
+        return remote(args)
+    except Exception as exc:  # noqa: BLE001  (any failure means "use the mirror")
+        warn_fallback(exc)
+        return local(args)
+
+
 def dispatch(name: str, args) -> dict:
     entry = _BY_NAME.get(name)
     if entry is None:
         return {"exitCode": 2, "stdout": "", "stderr": f"unknown tool: {name}"}
     try:
-        value = entry["run"](args if isinstance(args, dict) else {})
+        value = invoke(entry, args if isinstance(args, dict) else {})
     except ToolError as exc:
         return {"exitCode": 0, "stdout": _js({"error": str(exc)}), "stderr": ""}
     except Exception as exc:  # noqa: BLE001  (surface, never crash the worker)

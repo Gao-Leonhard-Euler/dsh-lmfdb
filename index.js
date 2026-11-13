@@ -71,6 +71,10 @@ function resolveConfig(config, moduleUrl) {
         python: typeof c.python === 'string' && c.python.length > 0 ? c.python : 'python',
         root,
         exportDir,
+        // primary backend: "mcp" (default, falls back to the mirror) or "postgres"
+        primary: typeof c.primary === 'string' && c.primary.length > 0 ? c.primary : '',
+        mcpUrl: typeof c.mcpUrl === 'string' && c.mcpUrl.length > 0 ? c.mcpUrl : '',
+        mcpTimeoutMs: Number.isFinite(c.mcpTimeoutMs) ? c.mcpTimeoutMs : 0,
         timeoutMs: Number.isFinite(c.timeoutMs) ? c.timeoutMs : DEFAULT_TIMEOUT_MS,
         script: path.join(root, 'agent_tools.py'),
     };
@@ -151,6 +155,12 @@ function createRunner(cfg) {
         };
         if (cfg.exportDir.length > 0)
             env.LMFDB_EXPORT_DIR = cfg.exportDir;
+        if (cfg.primary.length > 0)
+            env.LMFDB_PRIMARY = cfg.primary;
+        if (cfg.mcpUrl.length > 0)
+            env.LMFDB_MCP_URL = cfg.mcpUrl;
+        if (cfg.mcpTimeoutMs > 0)
+            env.LMFDB_MCP_TIMEOUT_MS = String(cfg.mcpTimeoutMs);
 
         const proc = spawn(cfg.python, [cfg.script, '--serve'], {
             cwd: cfg.root,

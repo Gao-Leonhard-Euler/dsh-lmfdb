@@ -20,9 +20,11 @@ drift from upstream. This repository adds the native Harness layer described bel
 
 Design points:
 
-- **No MCP hop.** The plugin talks to the PostgreSQL mirror directly through a
-  persistent Python worker. The MCP transport (and its HTTP endpoint) is not in
-  the request path at all.
+- **Hosted MCP first, mirror as fallback.** Every call goes to
+  `https://mcp.lmfdb.org/mcp`; if that endpoint times out, refuses, or answers
+  with an MCP-level error, the same call is re-run against the read-only
+  PostgreSQL mirror through `server.py`. Set `primary: postgres` to skip the
+  remote endpoint entirely.
 - **No SQL in the agent's way.** Eight tools take ordinary arguments, and the
   ninth (`lmfdb_find`) takes a JSON filter object. `lmfdb_run_sql` is retired:
   its manifest entry is commented out in `agent_tools.py`, while the
@@ -92,10 +94,16 @@ the model context.
 
 ```
 DSH host (node)  ──stdio JSONL──▶  python agent_tools.py --serve
-                                          └─ import server.py (unmodified)
-                                                ├─ SELECT-only guard, 120 s timeout, row caps
-                                                └─ psycopg2 ──▶ devmirror.lmfdb.xyz:5432
+                                          ├─ primary:   MCP over HTTPS ──▶ mcp.lmfdb.org/mcp
+                                          └─ fallback:  import server.py (unmodified)
+                                                          ├─ SELECT-only guard, 120 s timeout, row caps
+                                                          └─ psycopg2 ──▶ devmirror.lmfdb.xyz:5432
 ```
+
+`lmfdb_find` / `lmfdb_export_query` build their SELECT locally and send it to
+the primary through that server's `run_sql` tool, so both backends answer the
+same question; the other seven tools map 1:1 onto the hosted tools.
+A fallback logs one line to stderr (`primary MCP unavailable (...)`).
 
 The worker is spawned on first use and restarted after a crash or a timeout, so
 a dead mirror degrades to a per-call error instead of a broken tool.
@@ -106,6 +114,9 @@ python agent_tools.py --dump-tools            # tool manifest as JSON
 python agent_tools.py --call lmfdb_find '{"table":"nf_fields","where":"{\"conductor\":64}"}'
 python agent_tools.py --serve                 # JSONL request/response loop
 ```
+
+Backend selection is read from the environment at worker start:
+`LMFDB_PRIMARY` (`mcp` | `postgres`), `LMFDB_MCP_URL`, `LMFDB_MCP_TIMEOUT_MS`.
 
 ## Install
 
@@ -146,6 +157,9 @@ Either way the bundle adds a `lmfdb-tools` entry to the profile's
 | `root` (package root) | Directory containing `agent_tools.py` and `server.py`. |
 | `exportDir` (`<home>/lmfdb-exports`) | Default destination for `lmfdb_export_query`; a GitHub install lives in `node_modules`, so the default is the user's home directory. |
 | `timeoutMs` (300000) | Per-call limit; a timeout kills and restarts the worker. |
+| `primary` (`mcp`) | `mcp` sends every call to the hosted server first and falls back to the mirror; `postgres` always uses the mirror. |
+| `mcpUrl` (`https://mcp.lmfdb.org/mcp`) | Primary endpoint. |
+| `mcpTimeoutMs` (15000) | Connect + call budget for one primary attempt; exceeding it triggers the fallback. |
 
 The database connection defaults to the public read-only mirror
 `devmirror.lmfdb.xyz:5432` / `lmfdb` / `lmfdb`, and is overridden by the same

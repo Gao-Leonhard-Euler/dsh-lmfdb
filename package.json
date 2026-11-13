@@ -12,6 +12,7 @@
     "type":  "module",
     "main":  "index.js",
     "files": [
+    "mcp_backend.py",
     "index.js",
     "agent_tools.py",
     "server.py",

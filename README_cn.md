@@ -18,8 +18,9 @@ Harness 原生工具层。
 
 设计要点：
 
-- **没有 MCP 跃点。** 插件通过常驻 Python worker 直连 PostgreSQL 镜像，MCP 传输层
-  （以及它的 HTTP 端点）完全不在请求路径上。
+- **托管 MCP 优先，镜像兜底。** 每次调用先走 `https://mcp.lmfdb.org/mcp`；该端点
+  超时、拒绝连接或返回 MCP 级错误时，同一次调用自动改用只读 PostgreSQL 镜像
+  （经由 `server.py`）。设 `primary: postgres` 可完全跳过远端。
 - **不挡在 SQL 前面。** 8 个工具用普通参数，第 9 个（`lmfdb_find`）用 JSON 过滤器。
   `lmfdb_run_sql` 已下线：manifest 条目在 `agent_tools.py` 里被注释掉，实现仍留在
   `server.py`。
@@ -84,10 +85,15 @@ SQL 谓词透传，保留原 MCP 行为。
 
 ```
 DSH host (node)  ──stdio JSONL──▶  python agent_tools.py --serve
-                                          └─ import server.py（未改）
-                                                ├─ SELECT-only 白名单、120s 超时、行数上限
-                                                └─ psycopg2 ──▶ devmirror.lmfdb.xyz:5432
+                                        ├─ 主：MCP over HTTPS ──▶ mcp.lmfdb.org/mcp
+                                        └─ 备：import server.py（未改）
+                                                  ├─ SELECT-only 白名单、120s 超时、行数上限
+                                                  └─ psycopg2 ──▶ devmirror.lmfdb.xyz:5432
 ```
+
+`lmfdb_find` / `lmfdb_export_query` 在本地拼好 SELECT，再通过主端点的 `run_sql`
+工具执行，所以两条后端回答的是同一个问题；其余 7 个工具与托管工具 1:1 对应。
+发生兜底时 stderr 会打一行 `primary MCP unavailable (...)`。
 
 worker 首次调用时拉起，崩溃或超时后自动重启：数据库挂掉只会让单次调用报错，
 不会让工具永久失效。`agent_tools.py` 也能单独运行：
@@ -97,6 +103,9 @@ python agent_tools.py --dump-tools            # 输出工具清单 JSON
 python agent_tools.py --call lmfdb_find '{"table":"nf_fields","where":"{\"conductor\":64}"}'
 python agent_tools.py --serve                 # JSONL 请求/响应循环
 ```
+
+后端选择在 worker 启动时从环境变量读取：`LMFDB_PRIMARY`（`mcp` | `postgres`）、
+`LMFDB_MCP_URL`、`LMFDB_MCP_TIMEOUT_MS`。
 
 ## 安装
 
@@ -134,6 +143,9 @@ plugin_manager install_bundle  target=file:D:/MathProver/lmfdb-mcp/dsh-lmfdb-too
 | `root`（包根） | 含 `agent_tools.py`、`server.py` 的目录。 |
 | `exportDir`（`<home>/lmfdb-exports`） | `lmfdb_export_query` 的默认落盘目录；GitHub 安装落在 `node_modules` 里，所以默认写到用户主目录。 |
 | `timeoutMs`（300000） | 单次调用上限；超时会杀掉并重启 worker。 |
+| `primary`（`mcp`） | `mcp`：先走托管端点，失败自动回落镜像；`postgres`：只用镜像。 |
+| `mcpUrl`（`https://mcp.lmfdb.org/mcp`） | 主端点地址。 |
+| `mcpTimeoutMs`（15000） | 单次主端点尝试的建连+调用预算，超时即触发回落。 |
 
 数据库默认连公开只读镜像 `devmirror.lmfdb.xyz:5432` / `lmfdb` / `lmfdb`，
 可用 `server.py` 读取的同一批环境变量覆盖：`LMFDB_HOST`、`LMFDB_PORT`、

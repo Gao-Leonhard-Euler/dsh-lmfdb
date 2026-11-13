@@ -18,3 +18,7 @@
         root: 'D:\MathProver\lmfdb-mcp'
         exportDir: 'D:\MathProver\lmfdb-exports'
         timeoutMs: 300000
+        # hosted MCP server first, PostgreSQL mirror when it times out/fails
+        primary: mcp
+        mcpUrl: 'https://mcp.lmfdb.org/mcp'
+        mcpTimeoutMs: 15000

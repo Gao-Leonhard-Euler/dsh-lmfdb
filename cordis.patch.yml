@@ -21,3 +21,10 @@
     - id: lmfdb-tools
       name: dsh-lmfdb-tools
       inject: [ systemPrompt, tools ]
+      config:
+        # Primary backend: the hosted MCP server. When it times out or fails,
+        # the tools fall back to the read-only PostgreSQL mirror automatically.
+        # Use `primary: postgres` to skip the remote endpoint entirely.
+        primary: mcp
+        mcpUrl: 'https://mcp.lmfdb.org/mcp'
+        mcpTimeoutMs: 15000

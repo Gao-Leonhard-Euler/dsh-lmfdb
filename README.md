@@ -1,172 +1,188 @@
-# LMFDB MCP Server
+# dsh-lmfdb — native LMFDB tools for DeepSeek Harness
 
-A remote [MCP](https://modelcontextprotocol.io/) server that gives Claude
-(and other MCP clients) direct read-only access to the
-[LMFDB](https://www.lmfdb.org) PostgreSQL mirror.
+Read-only access to the [LMFDB](https://www.lmfdb.org) (L-functions and Modular
+Forms Database) from [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness),
+as nine native `lmfdb_*` tools. The agent queries the mirror with **structured
+filters**; no exposed tool asks it to write SQL.
 
-Once deployed and connected, users can make natural-language requests like:
+This repository is a dsh version of
+[AndrewVSutherland/lmfdb-mcp](https://github.com/AndrewVSutherland/lmfdb-mcp).
+The MCP server (`server.py`) and the Cloud Run deployment (`Dockerfile`) come
+from that project, and `server.py` is kept **unmodified** so the fork cannot
+drift from upstream. This fork adds the native Harness layer described below.
 
-> "Create a scatter plot of number of rational points vs analytic rank for
-> genus 2 curves in the LMFDB with Sato-Tate group USp(4)."
+## What this project adds
 
-…and Claude will query the database, analyze results, and produce plots —
-all within the chat interface, no code to run.
+| Path | Role |
+|:--|:--|
+| `agent_tools.py` | The nine tools as a JSON-lines worker. Imports `server.py`, so the SQL guard, statement timeout, row caps and curation metadata are reused rather than reimplemented. |
+| `dsh/lmfdb-tools/` | The DeepSeek Harness bundle that registers the tools and supervises a long-lived worker. |
 
-The code in this repository was written entirely by Claude Opus 4.6.
+Design points:
+
+- **No MCP hop.** The plugin talks to the PostgreSQL mirror directly through a
+  persistent Python worker. The MCP transport (and its HTTP endpoint) is not in
+  the request path at all.
+- **No SQL in the agent's way.** Eight tools take ordinary arguments, and the
+  ninth (`lmfdb_find`) takes a JSON filter object. `lmfdb_run_sql` is retired:
+  its manifest entry is commented out in `agent_tools.py`, while the
+  implementation stays in `server.py`.
+- **One source of truth.** Everything safety-relevant lives in `server.py`,
+  which this fork does not edit.
+
+## The nine tools
+
+| Tool | What it does |
+|:--|:--|
+| `lmfdb_overview` | Curated map of production tables by mathematical section, with the hub table and grain/join notes per section. |
+| `lmfdb_list_tables` | List tables (row estimates, curation notes), optionally by name prefix (`ec`, `nf`, `g2c`, `mf`, `gps`, ...). |
+| `lmfdb_search_knowls` | Full-text search over LMFDB documentation, for when you know the mathematics but not the column. |
+| `lmfdb_describe_table` | Columns with types, nullability, documented meaning and typical array lengths. |
+| `lmfdb_sample_rows` | A few random rows, to see the real value formats. |
+| `lmfdb_find` | Rows from one table: `table` + `where` + `columns` + `limit`. The SQL-free lookup. |
+| `lmfdb_count_rows` | `COUNT(*)` with the same structured `where`. |
+| `lmfdb_table_stats` | count / distinct / min / max / avg / stddev for one column, optionally filtered. |
+| `lmfdb_export_query` | Bulk export to a local CSV/JSONL file; accepts an optional `sql` argument for joins and aggregation. |
+
+Everything is read-only.
+
+## Structured filters (`where`)
+
+`lmfdb_find`, `lmfdb_count_rows`, `lmfdb_table_stats` and `lmfdb_export_query`
+accept the same JSON filter object:
+
+```json
+{"rank": 2}                                      // = 2
+{"conductor": {"min": 16, "max": 128}}           // BETWEEN
+{"st_group": {"in": ["USp(4)", "SU(2)xSU(2)"]}}   // IN
+{"label": {"like": "%.a1"}}                      // LIKE
+{"sha": null}                                    // IS NULL
+{"torsion_primes": {"includes": 2}}              // 2 = ANY(col)  (array columns)
+{"rank": {"gt": 1}, "cm": true}                  // several keys are ANDed
+```
+
+Operators: `eq ne gt gte lt lte min max in like ilike isnull notnull includes not`.
+Column names are validated as identifiers and string values are escaped before
+the predicate is assembled. A string that does **not** start with `{` is passed
+through as a raw SQL predicate, which keeps the original MCP behaviour
+available.
+
+## Bulk export
+
+`lmfdb_export_query` writes to disk instead of into the conversation:
+
+```json
+{"table": "g2c_curves",
+ "where": "{\"st_group\": \"USp(4)\"}",
+ "columns": "label,cond,mw_rank",
+ "format": "csv",
+ "max_rows": 50000}
+```
+
+```json
+{"path": "D:\\MathProver\\lmfdb-exports\\20261113-100942.csv",
+ "format": "csv", "row_count": 50000, "columns": [...], "bytes": 1234567,
+ "truncated": false}
+```
+
+Read the file afterwards (pandas, `head`, ...) instead of pulling rows through
+the model context.
 
 ## Architecture
 
 ```
-┌──────────────┐     HTTPS      ┌──────────────────┐    PostgreSQL  ┌──────────────────┐
-│  Claude.ai   │ ──────────────►│  lmfdb-mcp       │ ──────────────►│ devmirror        │
-│  (any user)  │   MCP protocol │  (Cloud Run)     │   read-only    │ .lmfdb.xyz:5432  │
-└──────────────┘                └──────────────────┘                └──────────────────┘
+DSH host (node)  ──stdio JSONL──▶  python agent_tools.py --serve
+                                          └─ import server.py (unmodified)
+                                                ├─ SELECT-only guard, 120 s timeout, row caps
+                                                └─ psycopg2 ──▶ devmirror.lmfdb.xyz:5432
 ```
 
-## Available Tools
+The worker is spawned on first use and restarted after a crash or a timeout, so
+a dead mirror degrades to a per-call error instead of a broken tool.
+`agent_tools.py` also runs standalone:
 
-| Tool            | Description                                           |
-|:----------------|:------------------------------------------------------|
-| `overview`      | Overview of LMFDB sections and tables                 |
-| `list_tables`   | Curated list of tables, optionally filtered by prefix |
-| `describe_table`| Show column names and types for a table               |
-| `search_knowls` | Search table/column knowls using keywords             |
-| `sample_rows`   | Return a small sample from a table                    |
-| `run_sql`       | Run an arbitrary SELECT query (max 100,000 rows)      |
-| `count_rows`    | Count rows with optional WHERE clause                 |
-| `table_stats`   | Compute min/max/avg/stddev for a numeric column       |
-| `export_query`  | Bulk download (CSV or JSONL) via short-lived URL |
-
-## Connecting Claude to the MCP server
-
-All Claude models (Haiku/Sonnet/Opus) can use tools via MCP servers.
-
-### For Individual Users (Pro / Max / Free)
-
-1. In the [claude.ai](https://claude.ai) sidebar, click **Customize** → **Connectors**
-2. Click **Add custom connector**
-3. Enter:
-   - **Name:** `LMFDB`
-   - **URL:** `https://mcp.lmfdb.org/mcp`
-4. Click **Add**
-5. Set Read-only tools to **Always allow** (optional, lets Claude use the tool without asking permission). 
-6. In any conversation, click **+** → **Connectors** → enable **LMFDB**
-
-### For Teams / Enterprise
-
-An organization Owner adds the connector once in **Organization Settings →
-Connectors**, and all members can then enable it per-conversation.
-
-## Enabling sandbox access for `export_query` (Claude.ai)
-
-The `export_query` tool returns a URL on `https://mcp.lmfdb.org/` instead
-of streaming rows through the MCP conversation. For Claude to actually
-fetch that URL inside its code-execution sandbox — where pandas, numpy,
-and plotting happen — the domain needs to be on the sandbox's
-network-egress allowlist. The other eight tools return data directly
-through the MCP conversation and are unaffected; this setup is only
-needed if you (or your users) want to use `export_query`.
-
-### Setup
-
-1. Go to [claude.ai](https://claude.ai) → **Settings** → **Capabilities**.
-2. Under **Code execution and file creation**, make sure the feature is
-   enabled and turn on **Allow network egress**.
-3. Set the domain allowlist to **Package managers and specific domains**
-   and add `mcp.lmfdb.org` to **Additional allowed domains**.
-
-### Settings apply to new conversations only
-
-Allowlist changes are copied into the sandbox when a conversation
-starts. Toggling settings mid-conversation has no effect on the current
-chat — start a fresh conversation after updating.
-
-## Connecting ChatGPT to the MCP server
-
-In ChatGPT MCP connectors are treated as "apps".  Custom apps (including the LMFDB MCP server) are not available on the Free/Go plan, as you need to enable **Developer mode** in order to install them.
-
-[Apps cannot be used in Pro models](https://help.openai.com/en/articles/11487775-connectors-in-chatgpt) (but they can be used in all other models available under the Pro plan).
-
-### For Individual Users (Pro / Plus)
-
-1. Go to [chatgpt.com](https://chatgpt.com) **→ Settings → Apps → Advanced settings**
-2. Enable **Developer mode**.
-3. Go to **Settings → Apps** and click **Create app**.
-4. Enter the app details:
-   - **Name:** `LMFDB`
-   - **MCP server URL:** `https://mcp.lmfdb.org/mcp`
-   - **Authentication:** `NoAuth`
-   - **I understand and want to continue:** tick the box (OpenAI has not reviewed this MCP server).
-5. Click **Create**.
-6. In any chat, use **+ → More** to add the **LMFDB** app.
-
-### For Business / Enterprise / Education
-
-An administrator needs to enable developer mode and create a new app for
-the LMFDB connector, all members can then enable it per-conversation.
-
-## Deployment to Google Cloud Run
-
-The instructions below assume you are an administrator of the lmfdb-mirror project on Google Cloud.
-
-### Steps
-
-```bash
-# 1. Set your project
-gcloud config set project YOUR_PROJECT_ID
-
-# 2. Build and push the container
-gcloud builds submit --tag us-central1-docker.pkg.dev/lmfdbmirror/lmfdb-mcp/lmfdb-mcp
-
-# 3. Deploy to Cloud Run
-gcloud run deploy lmfdb-mcp \
-  --image us-central1-docker.pkg.dev/lmfdbmirror/lmfdb-mcp/lmfdb-mcp \
-  --platform managed \
-  --region us-central1 \
-  --allow-unauthenticated \
-  --port 8080 \
-  --memory 512Mi \
-  --timeout 300 \
-  --min-instances=1
+```
+python agent_tools.py --dump-tools            # tool manifest as JSON
+python agent_tools.py --call lmfdb_find '{"table":"nf_fields","where":"{\"conductor\":64}"}'
+python agent_tools.py --serve                 # JSONL request/response loop
 ```
 
-## Local Development
+## Install
 
-```bash
-# Install dependencies
-pip install -r requirements.txt
+Requirements: Python 3 with `psycopg2` (the worker talks to PostgreSQL) and a
+DeepSeek Harness profile.
 
-# Run locally
-python server.py
-
-# Test with MCP Inspector
-npx @modelcontextprotocol/inspector http://localhost:8000/mcp
+```powershell
+pip install psycopg2-binary
+plugin_manager install_bundle  target=D:\MathProver\lmfdb-mcp\dsh\lmfdb-tools
 ```
 
-## Environment Variables (optional)
+The bundle adds a `lmfdb-tools` entry to the profile's `cordis.patch.yml` and
+`dsh-plugin-lmfdb` to `dsh.profile.bundles`. Call `lmfdb_overview` or
+`lmfdb_find` to verify.
 
-| Variable             | Default               | Description                    |
-|:---------------------|:----------------------|:-------------------------------|
-| `LMFDB_HOST`         | `devmirror.lmfdb.xyz` | PostgreSQL host                |
-| `LMFDB_PORT`         | `5432`                | PostgreSQL port                |
-| `LMFDB_DBNAME`       | `lmfdb`               | Database name                  |
-| `LMFDB_USER`         | `lmfdb`               | Database user                  |
-| `LMFDB_PASSWORD`     | `lmfdb`               | Database password              |
-| `LMFDB_MAX_ROWS`     | `100000`              | Hard limit on returned rows    |
-| `LMFDB_DEFAULT_LIMIT`| `100`                 | Default LIMIT if not specified |
-| `PORT`               | `8000`                | HTTP port (Cloud Run sets this)|
+## Configuration
 
+`dsh/lmfdb-tools/cordis.patch.yml` (defaults in parentheses):
 
-## Security Notes
+| Key | Meaning |
+|:--|:--|
+| `python` (`python`) | Interpreter that has `psycopg2`. Use an absolute path: the GUI process does not necessarily carry Python on `PATH`. |
+| `root` (bundle parent) | Directory containing `agent_tools.py` and `server.py`. |
+| `exportDir` (`<cwd>/lmfdb-exports`) | Default destination for `lmfdb_export_query`. |
+| `timeoutMs` (300000) | Per-call limit; a timeout kills and restarts the worker. |
 
-- The server only allows `SELECT`, `WITH`, and `EXPLAIN` queries.
-- A 120-second statement timeout prevents runaway queries.
-- Row results are capped at 100,000.
-- The underlying LMFDB mirror is read-only; writes will fail at the
-  database level regardless of what SQL is sent.
-- The default config is auth-less, which is appropriate since
-  the LMFDB mirror credentials are public.
+The database connection defaults to the public read-only mirror
+`devmirror.lmfdb.xyz:5432` / `lmfdb` / `lmfdb`, and is overridden by the same
+environment variables `server.py` reads: `LMFDB_HOST`, `LMFDB_PORT`,
+`LMFDB_DBNAME`, `LMFDB_USER`, `LMFDB_PASSWORD`, `LMFDB_MAX_ROWS`,
+`LMFDB_DEFAULT_LIMIT`.
+
+## Safety
+
+- Only `SELECT` / `WITH` / `EXPLAIN` reach the database; the guard is
+  `server.py`'s and is applied to every query the plugin builds.
+- 120 s statement timeout, bounded rows and an approximate byte budget.
+- Table and column names are validated against the identifier grammar, and
+  filter values are escaped, so a structured filter cannot smuggle SQL.
+- The mirror itself is read-only; writes fail at the database level regardless.
+- No exposed tool requires SQL. Raw SQL remains reachable only through the
+  optional `sql` argument of `lmfdb_export_query`.
+
+## The upstream MCP server
+
+`server.py` still works as the upstream MCP server: it serves the same nine
+tools over Streamable HTTP (`python server.py`, `PORT`, default 8000) and the
+`Dockerfile` builds it for Google Cloud Run. The DeepSeek Harness plugin above
+does not use that path — it imports the module instead — but both surfaces share
+the same tool bodies, so behaviour stays identical. Deployment instructions
+(Claude connectors, Cloud Run, sandbox allowlists) live in the upstream project.
+
+## Layout
+
+```
+lmfdb-mcp/
+├── server.py            # upstream MCP server, unmodified
+├── Dockerfile           # upstream Cloud Run image
+├── requirements.txt     # upstream Python dependencies (mcp, psycopg2-binary, uvicorn)
+├── agent_tools.py       # this fork: nine tools + JSONL worker protocol
+└── dsh/lmfdb-tools/     # this fork: DeepSeek Harness bundle
+    ├── index.js         # tool registration + worker supervision
+    ├── cordis.patch.yml # bundle patch (machine-specific paths)
+    ├── package.json
+    └── README.md
+```
+
+## Troubleshooting
+
+| Symptom | Fix |
+|:--|:--|
+| `ImportError: DLL load failed while importing _psycopg` | pip had just written the wheel and Windows was still scanning the DLLs; retry a few seconds later. Confirm `site-packages\psycopg2_binary.libs\libpq-*.dll` exists. |
+| `lmfdb worker exited` | The worker is restarted automatically; the message carries the tail of Python's stderr. Usually a wrong `python` path or a missing `psycopg2`. |
+| `column "x" does not exist` | Column names differ from the mathematics (`ec_curvedata` uses `lmfdb_label`). Run `lmfdb_describe_table` first. |
+| Tools missing after a profile edit | Re-apply the bundle: `plugin_manager set_plugin include:lmfdb-tools enabled=false`, then `enabled=true`. |
 
 ## License
 
-GPL-3.0 (matching lmfdb-lite)
+GPL-3.0 (matching lmfdb-lite), inherited from
+[AndrewVSutherland/lmfdb-mcp](https://github.com/AndrewVSutherland/lmfdb-mcp).

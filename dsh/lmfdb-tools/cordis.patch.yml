@@ -1,0 +1,20 @@
+# Native LMFDB tools for DeepSeek Harness.
+#
+# Nine lmfdb_* tools over the read-only LMFDB PostgreSQL mirror, with no MCP
+# hop. Only lmfdb_run_sql asks the model to write SQL; the other eight take
+# structured arguments (the `where` parameters accept JSON filters).
+#
+# The Python worker (agent_tools.py) reuses server.py unchanged, so the SQL
+# guard, statement timeout and row caps cannot drift from the MCP server.
+#
+# Install with:  plugin_manager install_bundle  target=<this directory>
+- insert:
+    - id: lmfdb-tools
+      name: dsh-plugin-lmfdb
+      inject: [ systemPrompt, tools ]
+      config:
+        # the GUI process PATH does not necessarily carry Python
+        python: 'C:\Python314\python.exe'
+        root: 'D:\MathProver\lmfdb-mcp'
+        exportDir: 'D:\MathProver\lmfdb-exports'
+        timeoutMs: 300000

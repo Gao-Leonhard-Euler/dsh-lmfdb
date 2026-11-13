@@ -1,9 +1,0 @@
-{
-  "name": "@local/lmfdb-mcp",
-  "version": "1.0.0",
-  "private": true,
-  "type": "module",
-  "description": "LMFDB access for DSH: connects the public LMFDB MCP server (mcp.lmfdb.org).",
-  "files": ["cordis.patch.yml"],
-  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
-}

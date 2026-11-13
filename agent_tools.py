@@ -253,6 +253,8 @@ def export_query(args) -> str:
         if clause:
             sql += f" WHERE {clause}"
         sql += f" LIMIT {max_rows}"
+    else:
+        out_columns = None
 
     result = fetch_rows(sql, max_rows)
     if "error" in result:

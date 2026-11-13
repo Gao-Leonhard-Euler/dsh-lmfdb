@@ -8,8 +8,8 @@ filters**; no exposed tool asks it to write SQL.
 This repository is a dsh version of
 [AndrewVSutherland/lmfdb-mcp](https://github.com/AndrewVSutherland/lmfdb-mcp).
 The MCP server (`server.py`) and the Cloud Run deployment (`Dockerfile`) come
-from that project, and `server.py` is kept **unmodified** so the fork cannot
-drift from upstream. This fork adds the native Harness layer described below.
+from that project, and `server.py` is kept **unmodified** so the repository cannot
+drift from upstream. This repository adds the native Harness layer described below.
 
 ## What this project adds
 
@@ -112,24 +112,39 @@ python agent_tools.py --serve                 # JSONL request/response loop
 Requirements: Python 3 with `psycopg2` (the worker talks to PostgreSQL) and a
 DeepSeek Harness profile.
 
+Install straight from GitHub — the repository root *is* the bundle, so a pnpm
+git dependency resolves it:
+
 ```powershell
 pip install psycopg2-binary
-plugin_manager install_bundle  target=D:\MathProver\lmfdb-mcp\dsh\lmfdb-tools
+plugin_manager install_bundle  target=github:Gao-Leonhard-Euler/dsh-lmfdb
 ```
 
-The bundle adds a `lmfdb-tools` entry to the profile's `cordis.patch.yml` and
-`dsh-plugin-lmfdb` to `dsh.profile.bundles`. Call `lmfdb_overview` or
-`lmfdb_find` to verify.
+From a local checkout (live edits, no publish step):
+
+```powershell
+pnpm pack                                        # produces dsh-lmfdb-tools-1.0.0.tgz
+plugin_manager install_bundle  target=file:D:/MathProver/lmfdb-mcp/dsh-lmfdb-tools-1.0.0.tgz
+```
+
+Either way the bundle adds a `lmfdb-tools` entry to the profile's
+`cordis.patch.yml` and `dsh-lmfdb-tools` to `dsh.profile.bundles`. Call
+`lmfdb_overview` or `lmfdb_find` to verify.
+
+> If the plugin was previously installed from a directory under another name,
+> restart DeepSeek Harness before installing — the running process caches
+> package-name → entry resolution, and the first import after a rename can
+> still point at the old path.
 
 ## Configuration
 
-`dsh/lmfdb-tools/cordis.patch.yml` (defaults in parentheses):
+`cordis.patch.yml` at the package root (defaults in parentheses):
 
 | Key | Meaning |
 |:--|:--|
 | `python` (`python`) | Interpreter that has `psycopg2`. Use an absolute path: the GUI process does not necessarily carry Python on `PATH`. |
-| `root` (bundle parent) | Directory containing `agent_tools.py` and `server.py`. |
-| `exportDir` (`<cwd>/lmfdb-exports`) | Default destination for `lmfdb_export_query`. |
+| `root` (package root) | Directory containing `agent_tools.py` and `server.py`. |
+| `exportDir` (`<home>/lmfdb-exports`) | Default destination for `lmfdb_export_query`; a GitHub install lives in `node_modules`, so the default is the user's home directory. |
 | `timeoutMs` (300000) | Per-call limit; a timeout kills and restarts the worker. |
 
 The database connection defaults to the public read-only mirror
@@ -161,14 +176,17 @@ the same tool bodies, so behaviour stays identical. Deployment instructions
 ## Layout
 
 ```
-lmfdb-mcp/
-├── server.py            # upstream MCP server, unmodified
-├── Dockerfile           # upstream Cloud Run image
-├── requirements.txt     # upstream Python dependencies (mcp, psycopg2-binary, uvicorn)
-├── agent_tools.py       # this fork: nine tools + JSONL worker protocol
-└── dsh/lmfdb-tools/     # this fork: DeepSeek Harness bundle
-    ├── index.js         # tool registration + worker supervision
-    ├── cordis.patch.yml # bundle patch (machine-specific paths)
+lmfdb-mcp/                 # repository root == the installable bundle
+├── package.json           # npm metadata + dsh.bundle.patch (git-URL installs use this)
+├── cordis.patch.yml       # bundle patch used when installed from a git URL
+├── index.js               # tool registration + worker supervision (the entry)
+├── agent_tools.py         # this fork: nine tools + JSONL worker protocol
+├── server.py              # upstream MCP server, unmodified
+├── Dockerfile             # upstream Cloud Run image
+├── requirements.txt       # upstream Python dependencies (mcp, psycopg2-binary, uvicorn)
+└── dsh/lmfdb-tools/       # local-checkout bundle (re-exports the root entry)
+    ├── index.js           # `export { name, inject, apply } from '../../index.js'`
+    ├── cordis.patch.yml   # bundle patch with this machine's paths
     ├── package.json
     └── README.md
 ```

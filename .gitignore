@@ -1,2 +1,4 @@
-.git/
+﻿.git/
 __pycache__/
+node_modules/
+*.tgz

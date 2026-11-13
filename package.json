@@ -1,0 +1,38 @@
+{
+    "name": "dsh-lmfdb-tools",
+    "version":  "1.0.0",
+    "description":  "LMFDB tools for DeepSeek Harness: nine lmfdb_* tools over the read-only LMFDB PostgreSQL mirror, with structured filters instead of SQL.",
+    "keywords":  [
+                     "deepseek-harness",
+                     "dsh-plugin",
+                     "lmfdb",
+                     "number-theory",
+                     "agent-tool"
+                 ],
+    "type":  "module",
+    "main":  "index.js",
+    "files": [
+    "index.js",
+    "agent_tools.py",
+    "server.py",
+    "requirements.txt",
+    "cordis.patch.yml",
+    "README.md",
+    "README_cn.md"
+  ],
+    "license":  "GPL-3.0",
+    "repository":  {
+                       "type":  "git",
+                       "url":  "git+https://github.com/Gao-Leonhard-Euler/dsh-lmfdb.git"
+                   },
+    "dsh":  {
+                "bundle":  {
+                               "patch":  "./cordis.patch.yml"
+                           }
+            },
+    "peerDependencies":  {
+                             "@deepseek-ai/cordis":  "\u003e=4.0.0",
+                             "@deepseek-ai/dsh-tools":  "\u003e=0.0.1-rc.1",
+                             "@deepseek-ai/dsh-system-prompt":  "\u003e=0.0.1-rc.1"
+                         }
+}

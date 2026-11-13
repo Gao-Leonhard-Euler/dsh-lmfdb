@@ -10,7 +10,7 @@
 # Install with:  plugin_manager install_bundle  target=<this directory>
 - insert:
     - id: lmfdb-tools
-      name: dsh-plugin-lmfdb
+      name: dsh-lmfdb-tools
       inject: [ systemPrompt, tools ]
       config:
         # the GUI process PATH does not necessarily carry Python

@@ -1,0 +1,23 @@
+# Bundle patch for the GitHub-installable layout.
+#
+# Everything the plugin needs travels inside the package: the JS entry lives in
+# dsh/lmfdb-tools/, and agent_tools.py + server.py at the package root. So the
+# only machine-specific knob is the Python interpreter.
+#
+# Install straight from GitHub:
+#
+#   plugin_manager install_bundle  target=github:Gao-Leonhard-Euler/dsh-lmfdb
+#
+# `python` defaults to whatever the name "python" resolves to on the host. If
+# that is not an interpreter with psycopg2, override this entry in the profile's
+# own cordis.patch.yml:
+#
+#   - id: lmfdb-tools
+#     config:
+#       python: 'C:\Python314\python.exe'
+#
+# exportDir defaults to <home>/lmfdb-exports; set it here to change.
+- insert:
+    - id: lmfdb-tools
+      name: dsh-lmfdb-tools
+      inject: [ systemPrompt, tools ]

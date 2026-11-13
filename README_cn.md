@@ -6,7 +6,7 @@ Agent 用**结构化过滤器**查询镜像，**没有任何暴露的工具需�
 
 本项目是 [AndrewVSutherland/lmfdb-mcp](https://github.com/AndrewVSutherland/lmfdb-mcp)
 的 DSH 插件版本：MCP 服务器（`server.py`）与 Cloud Run 部署（`Dockerfile`）来自上游，且
-`server.py` **未做任何修改**，所以本 fork 不会与上游行为漂移；本 fork 新增的是下面这套
+`server.py` **未做任何修改**，所以本项目不会与上游行为漂移；本项目新增的是下面这套
 Harness 原生工具层。
 
 ## 本项目新增了什么
@@ -103,24 +103,36 @@ python agent_tools.py --serve                 # JSONL 请求/响应循环
 前置：装好 `psycopg2` 的 Python（worker 用它连 PostgreSQL），以及一个 DeepSeek
 Harness profile。
 
+直接从 GitHub 安装——仓库根就是 bundle，pnpm 的 git 依赖可直接解析：
+
 ```powershell
 pip install psycopg2-binary
-plugin_manager install_bundle  target=D:\MathProver\lmfdb-mcp\dsh\lmfdb-tools
+plugin_manager install_bundle  target=github:Gao-Leonhard-Euler/dsh-lmfdb
 ```
 
-安装后 profile 的 `cordis.patch.yml` 会增加 `lmfdb-tools` 条目，
-`dsh.profile.bundles` 会增加 `dsh-plugin-lmfdb`。调用 `lmfdb_overview` 或
+从本地 checkout 安装（改完即生效，不需要发布）：
+
+```powershell
+pnpm pack                                        # 生成 dsh-lmfdb-tools-1.0.0.tgz
+plugin_manager install_bundle  target=file:D:/MathProver/lmfdb-mcp/dsh-lmfdb-tools-1.0.0.tgz
+```
+
+两种方式都会在 profile 的 `cordis.patch.yml` 增加 `lmfdb-tools` 条目，
+`dsh.profile.bundles` 增加 `dsh-lmfdb-tools`。调用 `lmfdb_overview` 或
 `lmfdb_find` 即可验证。
+
+> 如果此前用别的包名、以目录形式装过，**先重启 DeepSeek Harness 再装**：运行中的
+> 进程会缓存「包名 → 入口」的解析结果，改名后的第一次 import 仍可能指向旧路径。
 
 ## 配置
 
-`dsh/lmfdb-tools/cordis.patch.yml`（括号内为默认值）：
+仓库根的 `cordis.patch.yml`（括号内为默认值）：
 
 | 键 | 含义 |
 |:--|:--|
 | `python`（`python`） | 带 `psycopg2` 的解释器。建议用绝对路径：GUI 进程的 `PATH` 不一定有 Python。 |
-| `root`（bundle 上级目录） | 含 `agent_tools.py`、`server.py` 的目录。 |
-| `exportDir`（`<cwd>/lmfdb-exports`） | `lmfdb_export_query` 的默认落盘目录。 |
+| `root`（包根） | 含 `agent_tools.py`、`server.py` 的目录。 |
+| `exportDir`（`<home>/lmfdb-exports`） | `lmfdb_export_query` 的默认落盘目录；GitHub 安装落在 `node_modules` 里，所以默认写到用户主目录。 |
 | `timeoutMs`（300000） | 单次调用上限；超时会杀掉并重启 worker。 |
 
 数据库默认连公开只读镜像 `devmirror.lmfdb.xyz:5432` / `lmfdb` / `lmfdb`，
@@ -149,14 +161,17 @@ Google Cloud Run 镜像。上面的 Harness 插件不走这条路——它直接
 ## 目录结构
 
 ```
-lmfdb-mcp/
-├── server.py            # 上游 MCP 服务器，未修改
-├── Dockerfile           # 上游 Cloud Run 镜像
-├── requirements.txt     # 上游 Python 依赖（mcp、psycopg2-binary、uvicorn）
-├── agent_tools.py       # 本 fork：9 个工具 + JSONL worker 协议
-└── dsh/lmfdb-tools/     # 本 fork：DeepSeek Harness bundle
-    ├── index.js         # 工具注册 + worker 管理
-    ├── cordis.patch.yml # bundle patch（含本机路径）
+lmfdb-mcp/                 # 仓库根 == 可安装的 bundle
+├── package.json           # npm 元数据 + dsh.bundle.patch（GitHub 安装读这个）
+├── cordis.patch.yml       # GitHub 安装时使用的 bundle patch
+├── index.js               # 工具注册 + worker 管理（入口）
+├── agent_tools.py         # 本 fork：9 个工具 + JSONL worker 协议
+├── server.py              # 上游 MCP 服务器，未修改
+├── Dockerfile             # 上游 Cloud Run 镜像
+├── requirements.txt       # 上游 Python 依赖（mcp、psycopg2-binary、uvicorn）
+└── dsh/lmfdb-tools/       # 本地 checkout 用的 bundle（转发到根入口）
+    ├── index.js           # `export { name, inject, apply } from '../../index.js'`
+    ├── cordis.patch.yml   # bundle patch（含本机路径）
     ├── package.json
     └── README.md
 ```
